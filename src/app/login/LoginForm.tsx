@@ -1,0 +1,100 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { signIn } from "next-auth/react";
+import { rememberCredential, verifyOffline } from "@/lib/offline";
+import { Alert, Button, Field, Input, IconEye, IconEyeOff, cn } from "@/components/ui";
+
+/** A password field with a Show/Hide button inside it, so nobody has to type blind. */
+function PasswordInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
+  const { className, ...rest } = props;
+  const [show, setShow] = useState(false);
+  return (
+    <span className="relative block">
+      <Input {...rest} type={show ? "text" : "password"} className={cn("pr-11", className)} />
+      <button
+        type="button"
+        aria-label={show ? "Ocultar contraseña" : "Mostrar contraseña"}
+        aria-pressed={show}
+        onClick={() => setShow((v) => !v)}
+        className="absolute top-1/2 right-2 grid size-7 -translate-y-1/2 cursor-pointer place-items-center rounded-lg text-muted transition-colors hover:bg-surface-2 hover:text-fg"
+      >
+        {show ? <IconEyeOff /> : <IconEye />}
+      </button>
+    </span>
+  );
+}
+
+export function LoginForm() {
+  const router = useRouter();
+  const [error, setError] = useState<string>();
+  const [pending, setPending] = useState(false);
+
+  const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const email = String(form.get("email") ?? "");
+    const password = String(form.get("password") ?? "");
+    setError(undefined);
+    setPending(true);
+    try {
+      // No network: check the saved verifier and open the pages already kept on the device.
+      // A full load, not a client navigation, so the service worker can serve the kept page.
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        await verifyOffline(email, password);
+        window.location.replace("/");
+        return;
+      }
+
+      const result = await signIn("credentials", { email, password, redirect: false });
+      if (result?.error) {
+        if (result.code === "rate_limit_exceeded" || result.error === "rate_limit_exceeded" || result.error.includes("rate_limit")) {
+          setError("Demasiados intentos fallidos desde este equipo. Espera unos minutos antes de volver a intentarlo.");
+        } else {
+          setError("El correo o la contraseña no son correctos.");
+        }
+        return;
+      }
+      // Signed in for real, so remember it for the next offline start.
+      await rememberCredential(email, password);
+      router.replace("/");
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "No se pudo iniciar sesión.");
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <form onSubmit={onSubmit} className="flex flex-col gap-4">
+      <Field label="Correo electrónico" htmlFor="email">
+        <Input
+          id="email"
+          name="email"
+          type="email"
+          autoComplete="username"
+          required
+          autoFocus
+          placeholder="admin@medicheck.local"
+        />
+      </Field>
+      <Field label="Contraseña" htmlFor="password">
+        <PasswordInput
+          id="password"
+          name="password"
+          autoComplete="current-password"
+          required
+        />
+      </Field>
+      {error ? <Alert tone="error">{error}</Alert> : null}
+      <Button type="submit" size="lg" disabled={pending} className="mt-1 w-full justify-center">
+        {pending ? "Iniciando sesión…" : "Iniciar sesión"}
+      </Button>
+      <p className="text-center text-xs text-muted">
+        Usa el correo y la contraseña asignados. Puedes gestionarlo desde la configuración del sistema.
+      </p>
+    </form>
+  );
+}

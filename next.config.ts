@@ -41,6 +41,13 @@ const nextConfig: NextConfig = {
   experimental: {
     optimizePackageImports: ["recharts"],
   },
+  productionBrowserSourceMaps: false,
+  webpack(config, { dev }) {
+    // En desarrollo usa caché en memoria RAM (rápido sin ensuciar el disco);
+    // en build de producción evita generar archivos .pack de >100 MB en .next/cache.
+    config.cache = dev ? { type: "memory" } : false;
+    return config;
+  },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

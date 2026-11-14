@@ -1,0 +1,154 @@
+// The browser's mirror of the server's working set, plus the outbox of movements that
+// still need to reach it. Everything is a plain record; balances are never stored.
+
+import type {
+  OutboxMovement,
+  Role,
+  SyncBatch,
+  SyncItem,
+  SyncSnapshot,
+  SyncTransaction,
+} from "@/lib/api-types";
+import { today } from "@/lib/dates";
+import { clear, del, deleteKeysExcept, getAll, getOne, put, putMany, STORES } from "./idb";
+
+export interface CachedSession {
+  user: { id: number; name: string; email: string; role: Role };
+  today: string;
+  closedMonths: string[];
+  nurseBackdateDays: number;
+  savedAt: number;
+}
+
+export interface SnapshotData {
+  items: SyncItem[];
+  batches: SyncBatch[];
+  transactions: SyncTransaction[];
+}
+
+interface MetaRecord<T> {
+  key: string;
+  value: T;
+}
+
+const META = {
+  session: "session",
+  lastSyncAt: "lastSyncAt",
+  hydratedAt: "hydratedAt",
+  credential: "credential",
+} as const;
+
+async function getMeta<T>(key: string): Promise<T | undefined> {
+  const record = await getOne<MetaRecord<T>>(STORES.meta, key);
+  return record?.value;
+}
+
+async function setMeta<T>(key: string, value: T): Promise<void> {
+  await put(STORES.meta, { key, value });
+}
+
+export const store = {
+  async readSnapshot(): Promise<SnapshotData> {
+    const [items, batches, transactions] = await Promise.all([
+      getAll<SyncItem>(STORES.items),
+      getAll<SyncBatch>(STORES.batches),
+      getAll<SyncTransaction>(STORES.transactions),
+    ]);
+    return { items, batches, transactions };
+  },
+
+  async saveSnapshot(snapshot: SyncSnapshot): Promise<void> {
+    // The snapshot is the server's whole working set, so after writing it the mirror is made to
+    // match exactly: rows the server no longer has (a deleted item, its batches and entries) are
+    // dropped rather than kept as stale copies.
+    await putMany(STORES.items, snapshot.items);
+    await deleteKeysExcept(STORES.items, snapshot.items.map((i) => i.id));
+    await putMany(STORES.batches, snapshot.batches);
+    await deleteKeysExcept(STORES.batches, snapshot.batches.map((b) => b.id));
+    await putMany(STORES.transactions, snapshot.transactions);
+    await deleteKeysExcept(STORES.transactions, snapshot.transactions.map((t) => t.id));
+    await this.saveSession({
+      user: snapshot.user,
+      today: snapshot.today,
+      closedMonths: snapshot.closedMonths,
+      nurseBackdateDays: snapshot.nurseBackdateDays,
+      savedAt: Date.now(),
+    });
+    await setMeta(META.lastSyncAt, Date.now());
+    await setMeta(META.hydratedAt, Date.now());
+  },
+
+  async reset(): Promise<void> {
+    await Promise.all([
+      clear(STORES.items),
+      clear(STORES.batches),
+      clear(STORES.transactions),
+      clear(STORES.meta),
+      clear(STORES.outbox),
+    ]);
+  },
+
+  async getSession(): Promise<CachedSession | undefined> {
+    const cached = await getMeta<CachedSession>(META.session);
+    if (!cached) return undefined;
+    // Keep `today` current even if the browser has been offline across midnight.
+    const localToday = today();
+    if (localToday > cached.today) {
+      return { ...cached, today: localToday };
+    }
+    return cached;
+  },
+
+  async saveSession(session: CachedSession): Promise<void> {
+    await setMeta(META.session, session);
+  },
+
+  async getLastSyncAt(): Promise<number | undefined> {
+    return getMeta<number>(META.lastSyncAt);
+  },
+
+  async isHydrated(): Promise<boolean> {
+    return (await getMeta<number>(META.hydratedAt)) !== undefined;
+  },
+
+  // ---------- outbox ----------
+
+  async addOutbox(entry: OutboxMovement): Promise<void> {
+    await put(STORES.outbox, entry);
+  },
+
+  async listOutbox(): Promise<OutboxMovement[]> {
+    const entries = await getAll<OutboxMovement>(STORES.outbox);
+    return entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  },
+
+  async getOutbox(clientId: string): Promise<OutboxMovement | undefined> {
+    return getOne<OutboxMovement>(STORES.outbox, clientId);
+  },
+
+  async removeOutbox(clientId: string): Promise<void> {
+    await del(STORES.outbox, clientId);
+  },
+
+  async updateOutbox(entry: OutboxMovement): Promise<void> {
+    await put(STORES.outbox, entry);
+  },
+
+  // ---------- credential (offline sign-in) ----------
+
+  async getCredential(): Promise<CredentialRecord | undefined> {
+    return getMeta<CredentialRecord>(META.credential);
+  },
+
+  async saveCredential(record: CredentialRecord): Promise<void> {
+    await setMeta(META.credential, record);
+  },
+};
+
+export interface CredentialRecord {
+  email: string;
+  salt: string;
+  hash: string;
+  iterations: number;
+  savedAt: number;
+}
