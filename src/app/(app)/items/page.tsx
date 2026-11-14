@@ -1,0 +1,310 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { api } from "@/lib/api";
+import { CATEGORIES, CATEGORY_PREFIX, formatItemId, type Category, type ItemCreateBody } from "@/lib/api-types";
+import { useApi } from "@/lib/use-api";
+import { usePermissions } from "@/components/SessionProvider";
+import { Pagination, usePaging } from "@/components/Pagination";
+import {
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  EmptyState,
+  ErrorNote,
+  Field,
+  Input,
+  Loading,
+  LowBadge,
+  PageHeader,
+  Panel,
+  SearchInput,
+  Select,
+  Stat,
+  TableWrap,
+  categoryLabel,
+  cn,
+  linkClass,
+  rowClass,
+  thClass,
+  thRightClass,
+} from "@/components/ui";
+
+export default function ItemsPage() {
+  const { isAdmin } = usePermissions();
+  const [q, setQ] = useState("");
+  const [category, setCategory] = useState("ALL");
+  const [includeInactive, setIncludeInactive] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  const { data, error, loading, reload, refreshing } = useApi(
+    () => api.items({ q, category, includeInactive }),
+    [q, category, includeInactive],
+  );
+
+  const rows = data?.items ?? [];
+  const missingUnit = rows.filter((i) => !i.unit).length;
+  const missingLevel = rows.filter((i) => i.reorderLevel === null).length;
+
+  // A new search, category or filter starts again from the first page.
+  const itemsPage = usePaging(rows, 10, `${q}|${category}|${includeInactive}`);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Catálogo de artículos"
+        description={
+          isAdmin
+            ? "Todo lo que maneja enfermería. La unidad y el nivel de reorden definen qué se marca como stock bajo."
+            : "Todo lo que maneja enfermería."
+        }
+        actions={
+          isAdmin ? (
+            <Button onClick={() => setCreating(true)}>Agregar artículo</Button>
+          ) : undefined
+        }
+      />
+
+      {/* Filters grouped in one card so they read as a single set of controls. */}
+      <Card className="flex flex-wrap items-end gap-4 p-4">
+        <div className="flex min-w-56 flex-1 flex-col gap-1.5">
+          <label htmlFor="items-q" className="text-sm font-medium">Buscar</label>
+          <SearchInput
+            id="items-q"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Nombre, marca o código…"
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="items-category" className="text-sm font-medium">Categoría</label>
+          <Select
+            id="items-category"
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            className="w-44"
+          >
+            <option value="ALL">Todas las categorías</option>
+            {CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {categoryLabel(c)}
+              </option>
+            ))}
+          </Select>
+        </div>
+        {isAdmin ? (
+          <div className="flex h-[38px] items-center pb-0.5">
+            <Checkbox
+              label="Mostrar inactivos"
+              checked={includeInactive}
+              onChange={(e) => setIncludeInactive(e.target.checked)}
+            />
+          </div>
+        ) : null}
+      </Card>
+
+      {data ? (
+        <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <Stat label="Artículos mostrados" value={rows.length} />
+          <Stat label="Sin unidad" value={missingUnit} tone={missingUnit ? "warn" : "plain"} />
+          <Stat label="Sin nivel de reorden" value={missingLevel} tone={missingLevel ? "warn" : "plain"} />
+          <Stat label="Stock bajo" value={rows.filter((i) => i.lowStock).length} />
+        </dl>
+      ) : null}
+
+      {loading ? <Loading /> : null}
+      {error ? <ErrorNote error={new Error(error)} /> : null}
+      {refreshing ? <p className="text-xs text-muted">Actualizando…</p> : null}
+
+      <Panel
+        title={category === "ALL" ? "Todos los artículos" : categoryLabel(category)}
+        description={q ? `Coincidencias para «${q}»` : undefined}
+        actions={refreshing ? <span className="text-sm text-muted">Actualizando…</span> : undefined}
+      >
+        {rows.length === 0 ? (
+          <EmptyState
+            title="Ningún artículo coincide."
+            hint={isAdmin ? "Prueba otra búsqueda, amplía la categoría o agrega el artículo directamente." : "Prueba otra búsqueda o amplía la categoría."}
+            action={isAdmin ? <Button onClick={() => setCreating(true)}>Agregar artículo</Button> : undefined}
+          />
+        ) : (
+          <>
+            <TableWrap className={cn(refreshing && "opacity-60")}>
+            <thead>
+              <tr>
+                <th scope="col" className={thClass}>Código</th>
+                <th scope="col" className={thClass}>Artículo</th>
+                <th scope="col" className={thClass}>Categoría</th>
+                <th scope="col" className={thClass}>Unidad</th>
+                <th scope="col" className={thRightClass}>Reordenar en</th>
+                <th scope="col" className={thRightClass}>En existencia</th>
+              </tr>
+            </thead>
+            <tbody>
+              {itemsPage.rows.map((item) => (
+                <tr key={item.id} className={cn(rowClass, !item.active && "opacity-60")}>
+                  <td className="px-3 py-2.5">
+                    <Link href={`/items/${encodeURIComponent(item.id)}`} className={cn(linkClass, "font-mono text-xs")}>
+                      {item.id}
+                    </Link>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <Link href={`/items/${encodeURIComponent(item.id)}`} className={linkClass}>
+                      {item.name}
+                    </Link>
+                    {item.variant ? <span className="text-muted"> · {item.variant}</span> : null}
+                    {!item.active ? <span className="ml-2 text-xs text-muted">(inactivo)</span> : null}
+                  </td>
+                  <td className="px-3 py-2.5 text-xs text-muted">{categoryLabel(item.category)}</td>
+                  <td className={cn("px-3 py-2.5 text-xs", !item.unit && "text-warn")}>{item.unit ?? "—"}</td>
+                  <td className={cn("px-3 py-2.5 text-right font-mono text-xs", item.reorderLevel === null && "text-warn")}>
+                    {item.reorderLevel ?? "—"}
+                  </td>
+                  <td className="px-3 py-2.5 text-right font-mono font-medium">
+                    {item.balance}
+                    {item.lowStock ? <LowBadge /> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </TableWrap>
+          <Pagination total={rows.length} page={itemsPage.page} pageSize={itemsPage.pageSize} onPage={itemsPage.setPage} />
+          </>
+        )}
+      </Panel>
+
+      {creating ? <NewItemDialog onClose={() => setCreating(false)} onSaved={reload} /> : null}
+    </div>
+  );
+}
+
+function NewItemDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState<ItemCreateBody>({ name: "", category: "MEDICINE" });
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const [idHint, setIdHint] = useState("…");
+
+  // The server assigns the next free number in the category's block, so mirror that here as a preview.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .items({ includeInactive: true })
+      .then(({ items }) => {
+        if (cancelled) return;
+        setIdHint(nextItemIdFor(form.category, items.map((i) => i.id)));
+      })
+      .catch(() => {
+        if (!cancelled) setIdHint("—");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [form.category]);
+
+  const set = <K extends keyof ItemCreateBody>(key: K, value: ItemCreateBody[K]) =>
+    setForm((f) => ({ ...f, [key]: value }));
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(undefined);
+    try {
+      await api.createItem(form);
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo agregar el artículo.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="new-item-title">
+      <form onSubmit={submit} className="w-full max-w-md rounded-2xl border border-rule bg-surface p-6 shadow-float">
+        <h2 id="new-item-title" className="text-lg font-semibold">Agregar un artículo</h2>
+        <p className="mt-1 text-sm text-muted">
+          Puedes ingresar el código específico del artículo o dejarlo vacío para asignarlo automáticamente.
+        </p>
+
+        <div className="mt-5 flex flex-col gap-3.5">
+          <Field label="Nombre" htmlFor="new-name">
+            <Input
+              id="new-name"
+              value={form.name}
+              onChange={(e) => set("name", e.target.value)}
+              required
+              autoFocus
+            />
+          </Field>
+          <Field label="Variante o marca" htmlFor="new-variant" hint="Opcional, p. ej. Adicional, concentración o marca.">
+            <Input id="new-variant" value={form.variant ?? ""} onChange={(e) => set("variant", e.target.value)} />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Categoría" htmlFor="new-category">
+              <Select
+                id="new-category"
+                value={form.category}
+                onChange={(e) => set("category", e.target.value as Category)}
+              >
+                {CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {categoryLabel(c)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Unidad" htmlFor="new-unit" hint="p. ej. caja, frasco, tableta.">
+              <Input id="new-unit" value={form.unit ?? ""} onChange={(e) => set("unit", e.target.value)} />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Código" htmlFor="new-id" hint={`Por defecto: ${idHint}`}>
+              <Input
+                id="new-id"
+                value={form.id ?? ""}
+                placeholder={idHint}
+                onChange={(e) => set("id", e.target.value)}
+              />
+            </Field>
+            <Field label="Nivel de reorden" htmlFor="new-level" hint="Vacío o 0 para desactivarlo.">
+              <Input
+                id="new-level"
+                type="number"
+                min={0}
+                step={1}
+                value={form.reorderLevel ?? ""}
+                onChange={(e) => set("reorderLevel", e.target.value === "" ? null : Number(e.target.value))}
+              />
+            </Field>
+          </div>
+
+          {error ? <Alert tone="error">{error}</Alert> : null}
+
+          <div className="mt-1 flex justify-end gap-2">
+            <Button type="button" variant="plain" size="md" onClick={onClose} disabled={busy}>
+              Cancelar
+            </Button>
+            <Button type="submit" size="md" disabled={busy}>
+              {busy ? "Guardando…" : "Agregar artículo"}
+            </Button>
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/** The next free ID in a category's block, e.g. MED-152, mirroring the server's rule. */
+function nextItemIdFor(category: Category, ids: string[]): string {
+  const prefix = CATEGORY_PREFIX[category];
+  const re = new RegExp(`^${prefix}-(\\d+)$`);
+  let max = 0;
+  for (const id of ids) {
+    const m = re.exec(id);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return formatItemId(category, max + 1);
+}
