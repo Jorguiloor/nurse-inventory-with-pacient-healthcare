@@ -1,4 +1,3 @@
-# nurse-inventory-with-pacient-healthcare
 # MediCheck
 
 Sistema de Gestión de Inventario de Suministros Médicos y Enfermería.
